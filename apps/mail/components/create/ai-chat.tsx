@@ -1,8 +1,8 @@
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { useAIFullScreen, useAISidebar } from '../ui/ai-sidebar';
+import { useRef, useCallback, useEffect, useState } from 'react';
 import { VoiceProvider } from '@/providers/voice-provider';
 import useComposeEditor from '@/hooks/use-compose-editor';
-import { useRef, useCallback, useEffect } from 'react';
 import type { useAgentChat } from 'agents/ai-react';
 import { Markdown } from '@react-email/components';
 import { useBilling } from '@/hooks/use-billing';
@@ -209,6 +209,7 @@ export function AIChat({
   const [, setPricingDialog] = useQueryState('pricingDialog');
   const [aiSidebarOpen] = useQueryState('aiSidebar');
   const { toggleOpen } = useAISidebar();
+  const voiceResponseCallbackRef = useRef<((response: string) => void) | null>(null);
 
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
@@ -221,6 +222,28 @@ export function AIChat({
       scrollToBottom();
     }
   }, [status, scrollToBottom]);
+
+  // Track if we're waiting for a voice response
+  const [isVoiceQuery, setIsVoiceQuery] = useState(false);
+
+  // When a new assistant message comes in, check if it's a voice response
+  useEffect(() => {
+    if (isVoiceQuery && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'assistant') {
+        // Extract text content from the message
+        const textContent = lastMessage.parts
+          .filter((part) => part.type === 'text' && 'text' in part)
+          .map((part) => (part as any).text)
+          .join(' ');
+
+        if (textContent && voiceResponseCallbackRef.current) {
+          voiceResponseCallbackRef.current(textContent);
+          setIsVoiceQuery(false);
+        }
+      }
+    }
+  }, [messages, isVoiceQuery]);
 
   const editor = useComposeEditor({
     placeholder: 'Ask Zero to do anything...',
@@ -293,14 +316,19 @@ export function AIChat({
               const toolParts = message.parts.filter((part) => part.type === 'tool-invocation');
 
               return (
-                <div key={`${message.id}-${index}`} className="mb-2 flex flex-col" data-message-role={message.role}>
+                <div
+                  key={`${message.id}-${index}`}
+                  className="mb-2 flex flex-col"
+                  data-message-role={message.role}
+                >
                   {toolParts.map(
                     (part, index) =>
-                      part.toolInvocation?.result && (
+                      part.toolInvocation &&
+                      'result' in part.toolInvocation && (
                         <ToolResponse
                           key={`${part.toolInvocation.toolName}-${index}`}
                           toolName={part.toolInvocation.toolName}
-                          result={part.toolInvocation.result}
+                          result={(part.toolInvocation as any).result}
                           args={part.toolInvocation.args}
                         />
                       ),
@@ -387,7 +415,20 @@ export function AIChat({
             </div>
             <div className="grid">
               <div className="flex justify-end gap-1">
-                <VoiceProvider>
+                <VoiceProvider
+                  onTranscriptComplete={(transcript) => {
+                    // Mark this as a voice query
+                    setIsVoiceQuery(true);
+                    // Set the transcript as input and submit the form
+                    editor.commands.setContent(transcript);
+                    setInput(transcript);
+                    onSubmit({ preventDefault: () => {} } as React.FormEvent<HTMLFormElement>);
+                  }}
+                  onResponseReady={(callback) => {
+                    // Store the callback to be called when we get the AI response
+                    voiceResponseCallbackRef.current = callback;
+                  }}
+                >
                   <VoiceButton />
                 </VoiceProvider>
                 <button
